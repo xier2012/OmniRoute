@@ -15,12 +15,18 @@ export const grok_cliProvider: RegistryEntry = {
       id: "grok-build",
       name: "Grok Build",
       contextLength: 256000,
+      // cli-chat-proxy rejects reasoning_effort/reasoning outright (see grok-cli.ts
+      // executor's transformRequest, which strips them unconditionally for this model).
+      supportsReasoning: false,
       unsupportedParams: ["presencePenalty", "frequencyPenalty", "logprobs", "topLogprobs"],
     },
     {
       id: "grok-composer-2.5-fast",
       name: "Grok Composer 2.5 Fast",
       contextLength: 200000,
+      // cli-chat-proxy rejects reasoning_effort/reasoning outright (see grok-cli.ts
+      // executor's transformRequest, which strips them unconditionally for this model).
+      supportsReasoning: false,
       unsupportedParams: ["presencePenalty", "frequencyPenalty", "logprobs", "topLogprobs"],
     },
   ],
