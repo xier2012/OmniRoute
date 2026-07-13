@@ -60,3 +60,15 @@ test("host dispatcher + USAGE_FETCHER_PROVIDERS still cover the moved families",
     assert.ok(providers.includes(p), `${p} must remain a usage-fetcher provider`);
   }
 });
+
+// #7026 — `ollama-cloud` has a `case` in the dispatcher (getOllamaCloudUsage) but
+// was missing from the USAGE_FETCHER_PROVIDERS registration list, so the generic
+// quota fetcher never attempted to fetch its usage. The list must stay in sync
+// with the switch.
+test("host USAGE_FETCHER_PROVIDERS registers ollama-cloud (#7026)", () => {
+  const providers = (HOST as Record<string, unknown>).USAGE_FETCHER_PROVIDERS as readonly string[];
+  assert.ok(
+    providers.includes("ollama-cloud"),
+    "ollama-cloud has a usage dispatcher case but was missing from the registration list"
+  );
+});
