@@ -126,7 +126,20 @@ export function parseEslintJson(out) {
 
 /** Pull the cognitive-complexity violation count from the gate's output. */
 export function parseCognitiveCount(out) {
-  const m = String(out || "").match(/(\d+)\s+(?:function\(s\) exceed|violações|violations)/i);
+  const s = String(out || "");
+  // The combined `check:complexity-ratchets` walk prints BOTH the cyclomatic and
+  // cognitive sections in one ESLint pass. Each section reports `NNN violações`
+  // (or `NNN function(s) exceed`), so a naive /(\d+)\s+violações/ match grabs the
+  // cyclomatic total (e.g. 2056) instead of the cognitive one (e.g. 890) whenever
+  // the cyclomatic block is emitted first. That produced a phantom +1166 cognitive
+  // drift (#7009). Anchor strictly on the cognitive section: prefer the explicit
+  // `cognitiveComplexity=NNN` print line, then the `[cognitive-complexity]`-tagged
+  // line. Never fall through to the bare `violações`/`violations` pattern.
+  const explicit = /cognitiveComplexity=(\d+)/.exec(s);
+  if (explicit) return Number(explicit[1]);
+  const m = s.match(
+    /\[cognitive-complexity\][^\n]*?(\d+)\s+(?:function\(s\) exceed|viola[çc]õ?es|violations)/i
+  );
   return m ? Number(m[1]) : null;
 }
 
