@@ -31,6 +31,8 @@ import {
 } from "../db/proxies";
 import { bumpProxyConfigGeneration } from "../db/settings";
 import { isSubscriptionDue } from "./due";
+import { isLocalCoreEndpointAllowed } from "./coreEndpoint";
+import { resolveTargetScopes } from "./scopes";
 import { parseSubscription, redactedNodeSummary, type ParsedSubscription } from "./parse";
 
 export type ProxySubscriptionMode = "global" | "rule";
@@ -74,7 +76,6 @@ export interface SyncResult {
 }
 
 const SUBSCRIPTION_FETCH_TIMEOUT_MS = 15_000;
-const ALLOWED_LOCAL_CORE_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 // ───────────────────────────── Row mapping ─────────────────────────────
 
@@ -253,25 +254,6 @@ export async function deleteSubscription(id: string): Promise<boolean> {
 }
 
 // ───────────────────────────── Scope resolution ─────────────────────────────
-
-function resolveTargetScopes(sub: ProxySubscriptionRecord): Array<{ scope: "global" | "provider"; scopeId: string | null }> {
-  if (sub.mode === "rule" && sub.ruleProviders && sub.ruleProviders.length > 0) {
-    return sub.ruleProviders.map((p) => ({ scope: "provider" as const, scopeId: p }));
-  }
-  // global mode, or rule mode with no providers selected → bind global.
-  return [{ scope: "global" as const, scopeId: null }];
-}
-
-function isLocalCoreEndpointAllowed(endpoint: string | null): boolean {
-  if (!endpoint) return false;
-  try {
-    const u = new URL(endpoint);
-    const host = u.hostname.toLowerCase();
-    return ALLOWED_LOCAL_CORE_HOSTS.has(host);
-  } catch {
-    return false;
-  }
-}
 
 // ───────────────────────────── Sync + apply ─────────────────────────────
 
