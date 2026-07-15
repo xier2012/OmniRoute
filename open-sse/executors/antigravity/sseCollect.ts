@@ -108,7 +108,11 @@ export function processAntigravitySSEPayload(
         }
       }
     }
-    if (candidate?.finishReason) {
+    // Preserve a tool-call finish reason: once a native `part.functionCall`
+    // (or textual tool call) has populated `toolCalls`, the candidate's own
+    // finish reason (often STOP) must not clobber it (#7037 — a tool-only
+    // response would otherwise report STOP and lose its tool-call signal).
+    if (candidate?.finishReason && collected.toolCalls.length === 0) {
       collected.finishReason = normalizeOpenAICompatibleFinishReasonString(
         String(candidate.finishReason).toLowerCase()
       );
