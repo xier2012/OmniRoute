@@ -58,3 +58,17 @@ test("agentrouter discovery parseResponse maps an OpenAI-style model list", () =
     { id: "deepseek-v3.2" },
   ]);
 });
+
+test("agentrouter discovery headers leak no Authorization variant (case-insensitive)", () => {
+  const cfg = PROVIDER_MODELS_CONFIG.agentrouter;
+  const headers = cfg.buildHeaders!("sk-agentrouter");
+  const hasAuthVariant = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+  assert.equal(hasAuthVariant, false, "no Authorization/authorization header must survive");
+});
+
+test("agentrouter parseResponse handles a bare array response (#7016)", () => {
+  const cfg = PROVIDER_MODELS_CONFIG.agentrouter;
+  assert.deepEqual(cfg.parseResponse!([{ id: "claude-sonnet-4-6" }]), [
+    { id: "claude-sonnet-4-6" },
+  ]);
+});
