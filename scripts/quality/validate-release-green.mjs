@@ -138,7 +138,7 @@ export function parseCognitiveCount(out) {
   const explicit = /cognitiveComplexity=(\d+)/.exec(s);
   if (explicit) return Number(explicit[1]);
   const m = s.match(
-    /\[cognitive-complexity\][^\n]*?(\d+)\s+(?:function\(s\) exceed|viola[çc]õ?es|violations)/i
+    /\[cognitive-complexity\][^\n]*?(\d+)\s+(?:function\(s\) exceed|viola[çc][õo]?es|violations)/i
   );
   return m ? Number(m[1]) : null;
 }
