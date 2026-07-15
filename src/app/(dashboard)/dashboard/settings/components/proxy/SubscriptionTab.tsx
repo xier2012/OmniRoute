@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/shared/components";
+import { isNeedsCoreNode } from "@/lib/proxySubscription/needsCore";
 
 interface SubscriptionRecord {
   id: string;
@@ -43,26 +44,6 @@ const EMPTY_FORM: FormState = {
   updateIntervalMinutes: 60,
   enabled: true,
 };
-
-// Protocols that cannot be forwarded directly by OmniRoute — they require a
-// local sing-box / clash core. Direct nodes carry `type`; core-needed nodes
-// in the redacted summary carry only `rawProtocol` (no `type`).
-const NEEDS_CORE_PROTOCOLS = new Set([
-  "ss",
-  "vmess",
-  "trojan",
-  "vless",
-  "tuic",
-  "hysteria",
-  "wireguard",
-]);
-
-function isNeedsCoreNode(n: unknown): boolean {
-  if (!n || typeof n !== "object") return false;
-  const r = n as Record<string, unknown>;
-  if (typeof r.type === "string") return false;
-  return typeof r.rawProtocol === "string" && NEEDS_CORE_PROTOCOLS.has(r.rawProtocol);
-}
 
 export default function SubscriptionTab() {
   const [subs, setSubs] = useState<SubscriptionRecord[]>([]);
