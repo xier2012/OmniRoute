@@ -505,13 +505,31 @@ function evaluateContextLimit(
   capabilities: { maxInputTokens?: number | null; contextWindow?: number | null },
   requirements: { estimatedInputTokens: number; requiredContextTokens: number }
 ): boolean | null {
-  if (capabilities.maxInputTokens != null) {
-    return capabilities.maxInputTokens >= requirements.estimatedInputTokens;
-  }
-  if (capabilities.contextWindow != null) {
-    return capabilities.contextWindow >= requirements.requiredContextTokens;
-  }
-  return null;
+  const hasMaxInput = capabilities.maxInputTokens != null;
+  const hasContextWindow = capabilities.contextWindow != null;
+
+  // Neither limit is known — cannot judge.
+  if (!hasMaxInput && !hasContextWindow) return null;
+
+  // The input-only cap must accommodate the estimated input.
+  const inputFits = hasMaxInput
+    ? capabilities.maxInputTokens! >= requirements.estimatedInputTokens
+    : true;
+
+  // The total window must accommodate input + requested output. The output
+  // reserve is enforced separately via `maxOutputTokens`, but when a model
+  // exposes both `maxInputTokens` and `contextWindow` the two must not be
+  // checked in isolation: a request whose input fits `maxInputTokens` but whose
+  // input + output exceeds `contextWindow` must still be rejected (#7039
+  // follow-up — shared-window models where `maxInputTokens` defaults to the
+  // total window size).
+  const totalFits = hasContextWindow
+    ? capabilities.contextWindow! >= requirements.requiredContextTokens
+    : true;
+
+  if (hasMaxInput && hasContextWindow) return inputFits && totalFits;
+  if (hasMaxInput) return inputFits;
+  return totalFits;
 }
 
 function hasKnownCompatibleContextLimit(
