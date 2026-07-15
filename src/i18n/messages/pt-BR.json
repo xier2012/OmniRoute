@@ -5181,6 +5181,7 @@
     "proxyPoolTab": "Pool de Proxy",
     "freePoolTab": "Pool Gratuito",
     "proxyDocumentationTab": "Documentação",
+    "proxySubscriptionsTab": "Assinaturas",
     "bulkHealthcheck": "Verificação de integridade em massa",
     "bulkHealthcheckDesc": "Teste todos os proxies configurados contra uma URL de destino para encontrar quais funcionam.",
     "healthcheckTesting": "Testando...",
