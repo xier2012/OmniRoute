@@ -33,6 +33,12 @@ import { bumpProxyConfigGeneration } from "../db/settings";
 import { isSubscriptionDue } from "./due";
 import { isLocalCoreEndpointAllowed } from "./coreEndpoint";
 import { resolveTargetScopes } from "./scopes";
+import {
+  isSubscriptionFetchUrlAllowed,
+  isIpv4Blocked,
+  isIpv6Blocked,
+  isIpLiteral,
+} from "./fetchGuard";
 import { parseSubscription, redactedNodeSummary, type ParsedSubscription } from "./parse";
 
 export type ProxySubscriptionMode = "global" | "rule";
@@ -257,15 +263,58 @@ export async function deleteSubscription(id: string): Promise<boolean> {
 
 // ───────────────────────────── Sync + apply ─────────────────────────────
 
+/**
+ * Refuse to fetch a subscription URL unless it is http/https to a non-internal
+ * host. IP literals are checked structurally; hostnames are resolved and the
+ * resolved addresses are re-checked (fail closed on resolution errors). This
+ * blocks SSRF to internal services / cloud metadata (169.254.169.254).
+ */
+async function assertSafeFetchTarget(url: string): Promise<void> {
+  if (!isSubscriptionFetchUrlAllowed(url)) {
+    throw new Error("Subscription URL is not allowed (scheme or host blocked)");
+  }
+  const host = new URL(url).hostname.toLowerCase();
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (!isIpLiteral(bare)) {
+    // Hostname: resolve and refuse if any address is internal (fail closed).
+    try {
+      const dns = await import("node:dns");
+      const { address, family } = await dns.promises.lookup(bare);
+      const blocked = family === 6 ? isIpv6Blocked(address) : isIpv4Blocked(address);
+      if (blocked) throw new Error("Subscription host resolves to a blocked (internal) address");
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("blocked")) throw e;
+      throw new Error(`Subscription host resolution failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+}
+
 async function fetchSubscriptionContent(url: string): Promise<string> {
+  await assertSafeFetchTarget(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SUBSCRIPTION_FETCH_TIMEOUT_MS);
   try {
+    const headers = { "User-Agent": "OmniRoute-ProxySubscription" };
     const res = await fetch(url, {
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal,
-      headers: { "User-Agent": "OmniRoute-ProxySubscription" },
+      headers,
     });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) throw new Error("Subscription fetch redirected without Location");
+      // Resolve relative redirects and re-validate the target (SSRF guard).
+      const next = new URL(loc, url).toString();
+      await assertSafeFetchTarget(next);
+      const res2 = await fetch(next, { redirect: "manual", signal: controller.signal, headers });
+      if (res2.status >= 300 && res2.status < 400) {
+        throw new Error("Subscription fetch: too many redirects");
+      }
+      if (!res2.ok) {
+        throw new Error(`Subscription fetch failed: HTTP ${res2.status}`);
+      }
+      return await res2.text();
+    }
     if (!res.ok) {
       throw new Error(`Subscription fetch failed: HTTP ${res.status}`);
     }
