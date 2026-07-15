@@ -297,3 +297,7 @@ test("extractCiGates: the REAL ci.yml yields the base-reds that leaked in v3.8.4
   }
   assert.ok(ids.size >= 20, "the real gate set is substantial (>= 20 static gates)");
 });
+
+test("parseCognitiveCount matches unaccented Portuguese 'violacoes'", () => {
+  assert.equal(parseCognitiveCount("[cognitive-complexity] 812 violacoes > baseline 797"), 812);
+});
