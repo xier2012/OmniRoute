@@ -15,6 +15,11 @@ test("remote hosts are rejected", () => {
   assert.equal(isLocalCoreEndpointAllowed("https://192.168.1.1:443"), false);
 });
 
+test("non-proxy schemes on loopback are rejected", () => {
+  assert.equal(isLocalCoreEndpointAllowed("ftp://127.0.0.1:21"), false);
+  assert.equal(isLocalCoreEndpointAllowed("file:///tmp/core.sock"), false);
+});
+
 test("null / empty / malformed endpoints are rejected", () => {
   assert.equal(isLocalCoreEndpointAllowed(null), false);
   assert.equal(isLocalCoreEndpointAllowed(""), false);
