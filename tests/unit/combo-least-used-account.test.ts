@@ -7,11 +7,20 @@ import {
   resetComboMetrics,
   getComboMetrics,
 } from "../../open-sse/services/comboMetrics.ts";
+import type { ResolvedComboTarget } from "../../open-sse/services/combo/types.ts";
 
-type SorterTarget = { modelStr: string; executionKey: string; weight?: number };
-
-function target(modelStr: string, executionKey: string): SorterTarget {
-  return { modelStr, executionKey, weight: 1 };
+function target(modelStr: string, executionKey: string, provider = "codex"): ResolvedComboTarget {
+  return {
+    kind: "model",
+    stepId: executionKey,
+    executionKey,
+    modelStr,
+    provider,
+    providerId: null,
+    connectionId: null,
+    weight: 1,
+    label: null,
+  };
 }
 
 test("least-used distributes across distinct accounts of the same model (#7015)", () => {
