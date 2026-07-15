@@ -30,6 +30,7 @@ import {
   upsertProxy,
 } from "../db/proxies";
 import { bumpProxyConfigGeneration } from "../db/settings";
+import { isSubscriptionDue } from "./due";
 import { parseSubscription, redactedNodeSummary, type ParsedSubscription } from "./parse";
 
 export type ProxySubscriptionMode = "global" | "rule";
@@ -537,15 +538,11 @@ export function startSubscriptionScheduler(): void {
       const subs = await listSubscriptions();
       const now = Date.now();
       for (const s of subs) {
-        if (!s.enabled) continue;
-        const last = s.lastFetchedAt ? Date.parse(s.lastFetchedAt) : NaN;
-        const due = !Number.isFinite(last) || now - last >= s.updateIntervalMinutes * 60_000;
-        if (due) {
-          try {
-            await syncSubscription(s.id);
-          } catch (e) {
-            console.warn(`[ProxySubscription] refresh failed for ${s.id}: ${e instanceof Error ? e.message : e}`);
-          }
+        if (!isSubscriptionDue(s, now)) continue;
+        try {
+          await syncSubscription(s.id);
+        } catch (e) {
+          console.warn(`[ProxySubscription] refresh failed for ${s.id}: ${e instanceof Error ? e.message : e}`);
         }
       }
     } catch (e) {
