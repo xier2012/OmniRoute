@@ -67,7 +67,9 @@ const HEARTBEAT_ENCODER = new TextEncoder();
  * Set OMNIROUTE_SSE_COMMENTS=off to suppress comment-shaped heartbeats (they become a no-op).
  * Defaults to enabled for backward compatibility.
  */
-function sseCommentsEnabled(): boolean {
+export function sseCommentsEnabled(): boolean {
+  // SSR/edge safety: `process` is not defined in Workers/Deno/edge runtimes.
+  if (typeof process === "undefined") return true;
   const v = process.env.OMNIROUTE_SSE_COMMENTS;
   if (v === undefined || v === "") return true;
   return v.trim().toLowerCase() !== "off";
