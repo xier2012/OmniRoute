@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/shared/components";
 import { isNeedsCoreNode } from "@/lib/proxySubscription/needsCore";
 
@@ -50,6 +51,25 @@ export default function SubscriptionTab() {
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const t = useTranslations("settings");
+
+  // Resolve a subscription `error` value into a localized message. Values are
+  // either a `{ code, detail? }` JSON (user-facing, i18n'd) or a plain
+  // diagnostic string (technical fetch/sync errors) shown verbatim.
+  const resolveSubError = useCallback((raw: string | null): string | null => {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { code?: string; detail?: string };
+      if (parsed?.code) {
+        const base = t(`proxySubscription.error.${parsed.code}`);
+        return parsed.detail ? `${base}（${parsed.detail}）` : base;
+      }
+    } catch {
+      // plain diagnostic string — show as-is
+    }
+    return raw;
+  }, [t]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [showForm, setShowForm] = useState(false);
@@ -412,8 +432,8 @@ export default function SubscriptionTab() {
                 <p className="text-xs text-text-muted truncate mt-1" title={sub.url}>
                   {sub.url}
                 </p>
-                {sub.error && (
-                  <p className="text-xs text-amber-600 mt-1 break-words">{sub.error}</p>
+                {resolveSubError(sub.error) && (
+                  <p className="text-xs text-amber-600 mt-1 break-words">{resolveSubError(sub.error)}</p>
                 )}
                 {showCoreHint && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 space-y-1.5">
