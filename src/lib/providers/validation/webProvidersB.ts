@@ -312,9 +312,9 @@ export function extractM365CredentialParts(raw: string, providerSpecificData: Re
     try {
       const url = new URL(text);
       const hostOk = /^(?:[\w-]+\.)*(?:m365\.cloud\.microsoft|copilot\.microsoft\.com|substrate\.office\.com)$/i.test(
-        url.host
+        url.hostname
       );
-      if (hostOk && url.pathname.includes("/m365Copilot/Chathub/")) {
+      if (hostOk && url.pathname.startsWith("/m365Copilot/Chathub/")) {
         parts.access_token ||= url.searchParams.get("access_token") || "";
         parts.chathubPath ||= decodeURIComponent(
           url.pathname.split("/m365Copilot/Chathub/")[1] || ""
