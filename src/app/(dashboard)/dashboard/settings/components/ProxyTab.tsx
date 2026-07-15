@@ -15,7 +15,7 @@ const TABS: Array<{ id: TabId; labelKey: string; literal?: string }> = [
   { id: "proxy-pool", labelKey: "proxyPoolTab" },
   { id: "free-pool", labelKey: "freePoolTab" },
   { id: "documentation", labelKey: "proxyDocumentationTab" },
-  { id: "subscriptions", literal: "订阅代理" },
+  { id: "subscriptions", labelKey: "proxySubscriptionsTab" },
 ];
 
 export default function ProxyTab() {
