@@ -18,6 +18,8 @@ interface SubscriptionRecord {
   status: "ok" | "error" | "empty";
   error: string | null;
   lastNodes: unknown[] | null;
+  lastErrorAt: string | null;
+  consecutiveFailures: number;
 }
 
 interface ProviderOption {
@@ -467,6 +469,8 @@ export default function SubscriptionTab() {
                   节点数：{sub.lastNodes?.length ?? 0}
                   {needsCoreNodes.length > 0 ? `（${needsCoreNodes.length} 个需本地内核）` : ""}
                   {sub.lastFetchedAt ? ` · 上次同步：${sub.lastFetchedAt}` : ""}
+                  {sub.consecutiveFailures > 0 ? ` · 连续失败 ${sub.consecutiveFailures} 次` : ""}
+                  {sub.lastErrorAt ? ` · 上次错误：${sub.lastErrorAt}` : ""}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
