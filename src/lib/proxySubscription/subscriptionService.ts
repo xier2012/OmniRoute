@@ -22,11 +22,8 @@
 import { randomUUID } from "crypto";
 import { getDbInstance } from "../db/core";
 import {
-  addProxyToScopePool,
-  assignProxyToScope,
+  addProxiesToScopePool,
   deleteProxyById,
-  getProxyWhereUsed,
-  removeProxyFromScopePool,
   upsertProxy,
 } from "../db/proxies";
 import { bumpProxyConfigGeneration } from "../db/settings";
@@ -35,10 +32,10 @@ import { isLocalCoreEndpointAllowed } from "./coreEndpoint";
 import { resolveTargetScopes } from "./scopes";
 import {
   isSubscriptionFetchUrlAllowed,
-  isIpv4Blocked,
-  isIpv6Blocked,
   isIpLiteral,
+  isAnyResolvedAddressBlocked,
 } from "./fetchGuard";
+import { withRetry } from "./fetchRetry";
 import { parseSubscription, redactedNodeSummary, type ParsedSubscription } from "./parse";
 
 export type ProxySubscriptionMode = "global" | "rule";
@@ -70,6 +67,8 @@ export interface ProxySubscriptionRecord {
   status: ProxySubscriptionStatus;
   error: string | null;
   lastNodes: unknown[] | null;
+  lastErrorAt: string | null;
+  consecutiveFailures: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -131,6 +130,8 @@ function mapSubscriptionRow(row: unknown): ProxySubscriptionRecord {
     status: (r.status as ProxySubscriptionStatus) || "empty",
     error: typeof r.error === "string" ? r.error : null,
     lastNodes: parseNodes(r.last_nodes),
+    lastErrorAt: typeof r.last_error_at === "string" ? r.last_error_at : null,
+    consecutiveFailures: Number(r.consecutive_failures) || 0,
     createdAt: typeof r.created_at === "string" ? r.created_at : "",
     updatedAt: typeof r.updated_at === "string" ? r.updated_at : "",
   };
@@ -142,7 +143,7 @@ export async function listSubscriptions(): Promise<ProxySubscriptionRecord[]> {
   const db = getDbInstance();
   const rows = db
     .prepare(
-      "SELECT id, name, url, enabled, mode, rule_providers, local_core_endpoint, update_interval_minutes, last_fetched_at, status, error, last_nodes, created_at, updated_at FROM proxy_subscriptions ORDER BY datetime(updated_at) DESC, name ASC"
+      "SELECT id, name, url, enabled, mode, rule_providers, local_core_endpoint, update_interval_minutes, last_fetched_at, status, error, last_nodes, last_error_at, consecutive_failures, created_at, updated_at FROM proxy_subscriptions ORDER BY datetime(updated_at) DESC, name ASC"
     )
     .all();
   return rows.map(mapSubscriptionRow);
@@ -152,7 +153,7 @@ export async function getSubscriptionById(id: string): Promise<ProxySubscription
   const db = getDbInstance();
   const row = db
     .prepare(
-      "SELECT id, name, url, enabled, mode, rule_providers, local_core_endpoint, update_interval_minutes, last_fetched_at, status, error, last_nodes, created_at, updated_at FROM proxy_subscriptions WHERE id = ?"
+      "SELECT id, name, url, enabled, mode, rule_providers, local_core_endpoint, update_interval_minutes, last_fetched_at, status, error, last_nodes, last_error_at, consecutive_failures, created_at, updated_at FROM proxy_subscriptions WHERE id = ?"
     )
     .get(id);
   return row ? mapSubscriptionRow(row) : null;
@@ -289,12 +290,16 @@ async function assertSafeFetchTarget(url: string): Promise<void> {
   const host = new URL(url).hostname.toLowerCase();
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   if (!isIpLiteral(bare)) {
-    // Hostname: resolve and refuse if any address is internal (fail closed).
+    // Hostname: resolve ALL records and refuse if ANY address is internal
+    // (fail closed). A hostname can resolve to multiple records; checking only
+    // the first would let an internal IP slip through if a public record also
+    // exists. `lookup(..., { all: true })` returns every A/AAAA record.
     try {
       const dns = await import("node:dns");
-      const { address, family } = await dns.promises.lookup(bare);
-      const blocked = family === 6 ? isIpv6Blocked(address) : isIpv4Blocked(address);
-      if (blocked) throw new Error("Subscription host resolves to a blocked (internal) address");
+      const addrs = await dns.promises.lookup(bare, { all: true });
+      if (isAnyResolvedAddressBlocked(addrs)) {
+        throw new Error("Subscription host resolves to a blocked (internal) address");
+      }
     } catch (e) {
       if (e instanceof Error && e.message.includes("blocked")) throw e;
       throw new Error(`Subscription host resolution failed: ${e instanceof Error ? e.message : e}`);
@@ -302,17 +307,18 @@ async function assertSafeFetchTarget(url: string): Promise<void> {
   }
 }
 
-async function fetchSubscriptionContent(url: string): Promise<string> {
+/**
+ * Single fetch attempt: SSRF-validate the target, fetch with manual redirect
+ * handling, and re-validate any redirect target. Throws on non-2xx or a
+ * blocked target. Each attempt owns its own timeout so a retry after a fast
+ * failure isn't killed by the previous attempt's timer.
+ */
+async function doSafeFetch(url: string, headers: Record<string, string>): Promise<string> {
   await assertSafeFetchTarget(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SUBSCRIPTION_FETCH_TIMEOUT_MS);
   try {
-    const headers = { "User-Agent": "OmniRoute-ProxySubscription" };
-    const res = await fetch(url, {
-      redirect: "manual",
-      signal: controller.signal,
-      headers,
-    });
+    const res = await fetch(url, { redirect: "manual", signal: controller.signal, headers });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) throw new Error("Subscription fetch redirected without Location");
@@ -337,6 +343,36 @@ async function fetchSubscriptionContent(url: string): Promise<string> {
   }
 }
 
+/**
+ * Classify a fetch error as retryable. Transient (retry): network/timeout/DNS
+ * failures, HTTP 5xx, and HTTP 429. Permanent (no retry): 4xx client errors
+ * (except 429) and any SSRF-guard block — those will never succeed on retry.
+ */
+function isSubscriptionFetchRetryable(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.includes("not allowed") || msg.includes("blocked (internal)")) return false;
+  const m = msg.match(/HTTP (\d{3})/);
+  if (m) {
+    const code = Number(m[1]);
+    if (code === 429) return true;
+    if (code >= 500 && code < 600) return true;
+    return false; // 4xx (except 429) — permanent client error
+  }
+  return true; // network error / timeout / DNS failure — transient
+}
+
+async function fetchSubscriptionContent(url: string): Promise<string> {
+  const headers = { "User-Agent": "OmniRoute-ProxySubscription" };
+  // Retry transient failures (timeouts, 5xx, 429) with bounded exponential
+  // backoff; give up fast on permanent errors (4xx, SSRF block).
+  return withRetry(() => doSafeFetch(url, headers), {
+    maxAttempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 5000,
+    isRetryable: isSubscriptionFetchRetryable,
+  });
+}
+
 /** Fetch + parse + sync nodes into proxy_registry, then (if enabled) (re)bind. */
 async function syncSubscriptionUnsafe(id: string): Promise<SyncResult> {
   const sub = await getSubscriptionById(id);
@@ -349,7 +385,8 @@ async function syncSubscriptionUnsafe(id: string): Promise<SyncResult> {
     body = await fetchSubscriptionContent(sub.url);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    await updateSubscriptionStatus(id, "error", `Fetch failed: ${msg}`, null);
+    const fetchConsec = (sub.consecutiveFailures || 0) + 1;
+    await updateSubscriptionStatus(id, "error", `Fetch failed: ${msg}`, null, new Date().toISOString(), fetchConsec);
     return { subscriptionId: id, nodes: 0, needsCore: 0, boundProxies: 0, status: "error", error: msg, applied: false };
   }
 
@@ -438,7 +475,8 @@ async function syncSubscriptionUnsafe(id: string): Promise<SyncResult> {
   }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    await updateSubscriptionStatus(id, "error", `Sync write failed: ${msg}`, null);
+    const writeConsec = (sub.consecutiveFailures || 0) + 1;
+    await updateSubscriptionStatus(id, "error", `Sync write failed: ${msg}`, null, new Date().toISOString(), writeConsec);
     return { subscriptionId: id, nodes: 0, needsCore: 0, boundProxies: 0, status: "error", error: msg, applied: false };
   }
 
@@ -456,7 +494,12 @@ async function syncSubscriptionUnsafe(id: string): Promise<SyncResult> {
     status = parsed.nodes.length === 0 && parsed.needsCore.length === 0 ? "empty" : "ok";
   }
 
-  await updateSubscriptionStatus(id, status, error, lastNodes);
+  // Reset the consecutive-failure counter on a successful (ok/empty) sync; bump
+  // it on error. Record the error timestamp only when there is an error.
+  const isErr = status === "error";
+  const newConsec = isErr ? (sub.consecutiveFailures || 0) + 1 : 0;
+  const errAt = isErr ? new Date().toISOString() : null;
+  await updateSubscriptionStatus(id, status, error, lastNodes, errAt, newConsec);
 
   // Bind if enabled.
   let applied = false;
@@ -503,13 +546,24 @@ async function updateSubscriptionStatus(
   id: string,
   status: ProxySubscriptionStatus,
   error: string | null,
-  lastNodes: unknown[] | null
+  lastNodes: unknown[] | null,
+  lastErrorAt: string | null,
+  consecutiveFailures: number
 ): Promise<void> {
   const db = getDbInstance();
   const now = new Date().toISOString();
   db.prepare(
-    `UPDATE proxy_subscriptions SET status = ?, error = ?, last_nodes = ?, last_fetched_at = ?, updated_at = ? WHERE id = ?`
-  ).run(status, error, lastNodes ? JSON.stringify(lastNodes) : null, now, now, id);
+    `UPDATE proxy_subscriptions SET status = ?, error = ?, last_nodes = ?, last_fetched_at = ?, last_error_at = ?, consecutive_failures = ?, updated_at = ? WHERE id = ?`
+  ).run(
+    status,
+    error,
+    lastNodes ? JSON.stringify(lastNodes) : null,
+    now,
+    lastErrorAt,
+    consecutiveFailures,
+    now,
+    id
+  );
 }
 
 /** Bind the subscription's synced proxy pool into the target scope(s). */
@@ -526,10 +580,9 @@ export async function applySubscription(id: string): Promise<void> {
 
   const targets = resolveTargetScopes(sub);
   for (const t of targets) {
-    // Add each subscription proxy to the existing pool (preserves manual proxies).
-    for (const pid of ids) {
-      await addProxyToScopePool(t.scope, t.scopeId, pid);
-    }
+    // Add the whole subscription pool to this scope in one batched, idempotent
+    // write (preserves any manual proxies already in the pool).
+    await addProxiesToScopePool(t.scope, t.scopeId, ids);
   }
 
   await setProxyEnabledFlag(true);
@@ -537,27 +590,24 @@ export async function applySubscription(id: string): Promise<void> {
 
 /** Remove the subscription's proxies from their bound scope(s). */
 export async function unapplySubscription(id: string): Promise<void> {
-  const sub = await getSubscriptionById(id);
-  const targets = sub ? resolveTargetScopes(sub) : [];
-
   const db = getDbInstance();
   const rows = db
     .prepare("SELECT id FROM proxy_registry WHERE subscription_id = ?")
     .all(id) as Array<{ id: string }>;
 
-  for (const r of rows) {
-    // Remove from every scope this proxy is assigned to.
-    const used = await getProxyWhereUsed(r.id);
-    for (const a of used.assignments) {
-      await removeProxyFromScopePool(a.scope, a.scopeId, r.id);
-    }
-    // Also clear from target scopes (in case getProxyWhereUsed missed anything).
-    for (const t of targets) {
-      try {
-        await removeProxyFromScopePool(t.scope, t.scopeId, r.id);
-      } catch {
-        // ignore
-      }
+  // Detach every subscription proxy from ALL scopes in one batched delete.
+  // Replaces the previous per-proxy getProxyWhereUsed + removeProxyFromScopePool
+  // loop (N+1 queries) — the subscription's proxies must leave every pool they
+  // were added to, regardless of which scope resolved them.
+  const ids = rows.map((r) => r.id);
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => "?").join(",");
+    const res = db
+      .prepare(`DELETE FROM proxy_assignments WHERE proxy_id IN (${placeholders})`)
+      .run(...ids);
+    if (res.changes > 0) {
+      backupDbFile("pre-write");
+      bumpProxyRegistryGeneration();
     }
   }
 
