@@ -7,6 +7,7 @@ const {
   isIpv4Blocked,
   isIpv6Blocked,
   isIpLiteral,
+  isAnyResolvedAddressBlocked,
   ALLOWED_FETCH_SCHEMES,
 } = mod;
 
@@ -55,4 +56,34 @@ test("ip-range + literal helpers", () => {
   assert.equal(isIpLiteral("::1"), true);
   assert.equal(isIpLiteral("example.com"), false);
   assert.deepEqual([...ALLOWED_FETCH_SCHEMES], ["http:", "https:"]);
+});
+
+test("multi-record DNS: blocks if ANY resolved address is internal", () => {
+  // Hostname resolves to a public AND a private address — must be refused
+  // (closes the first-address-only bypass).
+  assert.equal(
+    isAnyResolvedAddressBlocked([
+      { address: "8.8.8.8", family: 4 },
+      { address: "192.168.1.10", family: 4 },
+    ]),
+    true
+  );
+  // All public → allowed.
+  assert.equal(
+    isAnyResolvedAddressBlocked([
+      { address: "8.8.8.8", family: 4 },
+      { address: "1.1.1.1", family: 4 },
+    ]),
+    false
+  );
+  // A single internal IPv6 among public records → blocked.
+  assert.equal(
+    isAnyResolvedAddressBlocked([
+      { address: "2606:4700::1111", family: 6 },
+      { address: "fd00::1", family: 6 },
+    ]),
+    true
+  );
+  // Empty result set → nothing blocked.
+  assert.equal(isAnyResolvedAddressBlocked([]), false);
 });
